@@ -1,0 +1,191 @@
+name: Download LayoutParser Models
+
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches:
+      - main
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        pip install layoutparser torchvision torch
+        pip install 'git+https://github.com/facebookresearch/detectron2.git@v0.6#egg=detectron2'
+    
+    - name: Download PubLayNet model
+      run: |
+        python3 << 'EOF'
+        import layoutparser as lp
+        import os
+        from pathlib import Path
+        
+        print("📥 Downloading PubLayNet model...")
+        model = lp.Detectron2LayoutModel(
+            "lp://PubLayNet/faster_rcnn_R_50_FPN_3x/config",
+            extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.5]
+        )
+        print("✅ PubLayNet downloaded!")
+        EOF
+    
+    - name: Download PrimaLayout model
+      run: |
+        python3 << 'EOF'
+        import layoutparser as lp
+        print("📥 Downloading PrimaLayout model...")
+        model = lp.Detectron2LayoutModel(
+            "lp://PrimaLayout/mask_rcnn_R_50_FPN_3x/config",
+            extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.5]
+        )
+        print("✅ PrimaLayout downloaded!")
+        EOF
+    
+    - name: Download NewspaperNavigator model
+      run: |
+        python3 << 'EOF'
+        import layoutparser as lp
+        print("📥 Downloading NewspaperNavigator model...")
+        model = lp.Detectron2LayoutModel(
+            "lp://NewspaperNavigator/faster_rcnn_R_50_FPN_3x/config",
+            extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.5]
+        )
+        print("✅ NewspaperNavigator downloaded!")
+        EOF
+    
+    - name: Download TableBank model
+      run: |
+        python3 << 'EOF'
+        import layoutparser as lp
+        print("📥 Downloading TableBank model...")
+        model = lp.Detectron2LayoutModel(
+            "lp://TableBank/faster_rcnn_R_101_FPN_3x/config",
+            extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.5]
+        )
+        print("✅ TableBank downloaded!")
+        EOF
+    
+    - name: Organize downloaded files
+      run: |
+        mkdir -p models
+        
+        # Find torch cache directory
+        TORCH_CACHE=$(python3 -c "from pathlib import Path; print(Path.home() / '.torch' / 'iopath_cache')")
+        echo "📁 Cache directory: $TORCH_CACHE"
+        
+        # Copy all downloaded models
+        if [ -d "$TORCH_CACHE" ]; then
+          find "$TORCH_CACHE" -name "*.pth" -o -name "*.pkl" -o -name "*.yaml" | while read file; do
+            cp "$file" models/
+            echo "✅ Copied: $(basename $file)"
+          done
+        fi
+        
+        ls -lh models/
+    
+    - name: Split large files
+      run: |
+        cd models
+        for file in *.pth; do
+          if [ -f "$file" ]; then
+            SIZE=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file")
+            SIZE_MB=$((SIZE / 1024 / 1024))
+            
+            if [ $SIZE_MB -gt 95 ]; then
+              echo "✂️ Splitting $file (${SIZE_MB}MB)..."
+              split -b 95M "$file" "${file}.part"
+              rm "$file"
+              echo "✅ Split complete"
+            fi
+          fi
+        done
+        
+        ls -lh
+    
+    - name: Create merge scripts
+      run: |
+        cd models
+        
+        # Find all part files
+        for base in $(ls *.pth.part* 2>/dev/null | sed 's/.part.*//' | sort -u); do
+          cat > "merge_${base}.py" << 'SCRIPT'
+        import os
+        import glob
+        
+        base_name = "${base}"
+        parts = sorted(glob.glob(f"{base_name}.part*"))
+        
+        print(f"Merging {len(parts)} parts into {base_name}...")
+        
+        with open(base_name, 'wb') as outfile:
+            for part in parts:
+                print(f"  Adding: {part}")
+                with open(part, 'rb') as infile:
+                    outfile.write(infile.read())
+        
+        size_mb = os.path.getsize(base_name) / (1024**2)
+        print(f"✅ Created: {base_name} ({size_mb:.1f} MB)")
+        SCRIPT
+          
+          echo "✅ Created merge_${base}.py"
+        done
+    
+    - name: Create README
+      run: |
+        cat > models/README.md << 'README'
+        # LayoutParser Models Collection
+        
+        All models downloaded from LayoutParser and ready to use!
+        
+        ## 📦 Models Included
+        
+        1. **PubLayNet** - Scientific papers (5 classes)
+        2. **PrimaLayout** - Historical documents (6 classes)
+        3. **NewspaperNavigator** - Newspapers (7 classes)
+        4. **TableBank** - Tables (1 class)
+        
+        ## 📥 Download and Setup
+        
+        ```bash
+        # Clone this repo
+        git clone https://github.com/sumca1/LayoutParser.git C:\layoutparser_models_all
+        cd C:\layoutparser_models_all\models
+        
+        # Merge split files (if any)
+        python merge_model_final.py
+        ```
+        
+        ## 🔧 Usage
+        
+        ```python
+        import layoutparser as lp
+        
+        # PubLayNet
+        model = lp.Detectron2LayoutModel(
+            config_path='C:/layoutparser_models_all/models/config.yaml',
+            model_path='C:/layoutparser_models_all/models/model_final.pth',
+            label_map={0: "Text", 1: "Title", 2: "List", 3: "Table", 4: "Figure"}
+        )
+        ```
+        README
+        
+        echo "✅ Created README.md"
+    
+    - name: Commit and push models
+      run: |
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+        
+        git add models/
+        git commit -m "🤖 Auto-download LayoutParser models" || echo "No changes to commit"
+        git push
