@@ -1,0 +1,236 @@
+name: Universal Model Downloader
+on:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: 'URL של המודל להורדה (Dropbox/Google Drive/HuggingFace/Azure)'
+        required: true
+        type: string
+      model_name:
+        description: 'שם המודל (ישמש כתיקייה)'
+        required: true
+        type: string
+      split_size_mb:
+        description: 'גודל פיצול ב-MB (ברירת מחדל: 95)'
+        required: false
+        default: '95'
+        type: string
+      file_extension:
+        description: 'סיומת הקובץ (pth/bin/safetensors/onnx)'
+        required: false
+        default: 'pth'
+        type: string
+
+jobs:
+  download-and-split:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests PyYAML
+      
+      - name: Download model
+        run: |
+          echo "🚀 מתחיל הורדה מ-${{ github.event.inputs.model_url }}"
+          
+          # זיהוי אוטומטי של סוג ה-URL
+          MODEL_URL="${{ github.event.inputs.model_url }}"
+          
+          if [[ $MODEL_URL == *"dropbox.com"* ]]; then
+            echo "📦 זוהה Dropbox URL"
+            # המרה ל-direct download
+            MODEL_URL="${MODEL_URL/www.dropbox.com/dl.dropboxusercontent.com}"
+            MODEL_URL="${MODEL_URL/?dl=0/?dl=1}"
+          elif [[ $MODEL_URL == *"drive.google.com"* ]]; then
+            echo "📦 זוהה Google Drive URL"
+            # חילוץ file ID
+            FILE_ID=$(echo $MODEL_URL | grep -oP '(?<=d/)[^/]+|(?<=id=)[^&]+')
+            MODEL_URL="https://drive.google.com/uc?export=download&id=$FILE_ID"
+          elif [[ $MODEL_URL == *"huggingface.co"* ]]; then
+            echo "📦 זוהה HuggingFace URL"
+            # כבר URL ישיר
+          fi
+          
+          echo "📥 מוריד מ: $MODEL_URL"
+          wget -O model_temp.${{ github.event.inputs.file_extension }} "$MODEL_URL" \
+            --progress=bar:force:noscroll \
+            --no-check-certificate \
+            --timeout=300 \
+            --tries=3
+          
+          echo "✅ הורדה הושלמה!"
+          ls -lh model_temp.${{ github.event.inputs.file_extension }}
+      
+      - name: Split model into parts
+        run: |
+          SPLIT_SIZE_MB=${{ github.event.inputs.split_size_mb }}
+          SPLIT_SIZE_BYTES=$((SPLIT_SIZE_MB * 1024 * 1024))
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          FILE_EXT="${{ github.event.inputs.file_extension }}"
+          
+          echo "✂️  מפצל קובץ לחלקים של ${SPLIT_SIZE_MB}MB..."
+          
+          # יצירת תיקייה למודל
+          mkdir -p "$MODEL_NAME"
+          
+          # פיצול הקובץ
+          split -b $SPLIT_SIZE_BYTES \
+            -d \
+            --additional-suffix=.part \
+            model_temp.$FILE_EXT \
+            "$MODEL_NAME/model_final.$FILE_EXT."
+          
+          # יצירת קובץ config
+          cat > "$MODEL_NAME/config.yml" << EOF
+          model_name: $MODEL_NAME
+          original_url: ${{ github.event.inputs.model_url }}
+          file_extension: $FILE_EXT
+          split_size_mb: $SPLIT_SIZE_MB
+          total_size_bytes: $(stat -c%s model_temp.$FILE_EXT)
+          parts_count: $(ls $MODEL_NAME/model_final.$FILE_EXT.*.part | wc -l)
+          created_at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          sha256: $(sha256sum model_temp.$FILE_EXT | cut -d' ' -f1)
+          EOF
+          
+          # יצירת סקריפט איחוד
+          cat > "$MODEL_NAME/merge.py" << 'MERGE_SCRIPT'
+          #!/usr/bin/env python3
+          """
+          סקריפט איחוד חלקים למודל שלם
+          """
+          import os
+          import glob
+          import yaml
+          from pathlib import Path
+          
+          def merge_model():
+              # קריאת config
+              with open('config.yml') as f:
+                  config = yaml.safe_load(f)
+              
+              model_name = config['model_name']
+              file_ext = config['file_extension']
+              output_file = f"model_final.{file_ext}"
+              
+              print(f"🔄 מאחד {config['parts_count']} חלקים...")
+              
+              # מציאת כל החלקים
+              parts = sorted(glob.glob(f"model_final.{file_ext}.*.part"))
+              
+              if not parts:
+                  print("❌ לא נמצאו חלקים!")
+                  return False
+              
+              print(f"   נמצאו {len(parts)} חלקים")
+              
+              # איחוד
+              with open(output_file, 'wb') as outfile:
+                  for i, part in enumerate(parts, 1):
+                      print(f"   מאחד חלק {i}/{len(parts)}: {part}")
+                      with open(part, 'rb') as infile:
+                          outfile.write(infile.read())
+              
+              # בדיקת גודל
+              final_size = os.path.getsize(output_file)
+              expected_size = config['total_size_bytes']
+              
+              if final_size == expected_size:
+                  print(f"✅ איחוד הושלם בהצלחה!")
+                  print(f"   קובץ: {output_file}")
+                  print(f"   גודל: {final_size / (1024*1024):.1f} MB")
+                  return True
+              else:
+                  print(f"⚠️  אזהרה: גודל לא תואם!")
+                  print(f"   צפוי: {expected_size / (1024*1024):.1f} MB")
+                  print(f"   בפועל: {final_size / (1024*1024):.1f} MB")
+                  return False
+          
+          if __name__ == '__main__':
+              merge_model()
+          MERGE_SCRIPT
+          
+          chmod +x "$MODEL_NAME/merge.py"
+          
+          # יצירת README
+          cat > "$MODEL_NAME/README.md" << EOF
+          # $MODEL_NAME
+          
+          מודל שהורד אוטומטי דרך GitHub Actions
+          
+          ## מידע
+          - **גודל כולל**: $(numfmt --to=iec-i --suffix=B $(stat -c%s model_temp.$FILE_EXT))
+          - **מספר חלקים**: $(ls $MODEL_NAME/model_final.$FILE_EXT.*.part | wc -l)
+          - **גודל כל חלק**: ~${SPLIT_SIZE_MB}MB
+          - **URL מקורי**: ${{ github.event.inputs.model_url }}
+          - **תאריך הורדה**: $(date)
+          
+          ## איך להשתמש
+          
+          1. הורד את כל הקבצים בתיקייה זו
+          2. הרץ את סקריפט האיחוד:
+             \`\`\`bash
+             python merge.py
+             \`\`\`
+          3. הקובץ \`model_final.$FILE_EXT\` יתקבל
+          
+          ## הורדה מהירה
+          
+          \`\`\`bash
+          # הורדה עם git
+          git clone --depth 1 --filter=blob:none --sparse \\
+            https://github.com/${{ github.repository }}.git
+          cd $(basename ${{ github.repository }})
+          git sparse-checkout set $MODEL_NAME
+          
+          # איחוד
+          cd $MODEL_NAME
+          python merge.py
+          \`\`\`
+          
+          ## או עם wget
+          
+          \`\`\`bash
+          # הורדת כל החלקים
+          BASE_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/$MODEL_NAME"
+          
+          wget \$BASE_URL/config.yml
+          wget \$BASE_URL/merge.py
+          
+          # הורדת החלקים (התאם את המספר)
+          for i in {00..$(printf "%02d" $(($(ls $MODEL_NAME/model_final.$FILE_EXT.*.part | wc -l) - 1)))}; do
+            wget "\$BASE_URL/model_final.$FILE_EXT.\${i}.part"
+          done
+          
+          # איחוד
+          python merge.py
+          \`\`\`
+          EOF
+          
+          # מחיקת הקובץ הזמני
+          rm model_temp.$FILE_EXT
+          
+          echo "✅ פיצול הושלם!"
+          echo "📊 סטטיסטיקה:"
+          ls -lh "$MODEL_NAME/"
+      
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          
+          git add "${{ github.event.inputs.model_name }}/"
+          git commit -m "Add model: ${{ github.event.inputs.model_name }}"
+          git push
+          
+          echo "✅ המודל עלה בהצלחה ל-repo!"
+          echo "🔗 צפה ב-https://github.com/${{ github.repository }}/tree/main/${{ github.event.inputs.model_name }}"
