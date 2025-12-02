@@ -23,41 +23,121 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: Install Ollama
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
         run: |
-          echo "📥 מתקין Ollama..."
-          curl -fsSL https://ollama.com/install.sh | sh
+          pip install requests tqdm
           
-      - name: Start Ollama service
-        run: |
-          echo "🚀 מפעיל Ollama service..."
-          ollama serve &
-          sleep 5
-          
-      - name: Download model
-        run: |
-          echo "📥 מוריד ${{ github.event.inputs.model_name }}..."
-          ollama pull ${{ github.event.inputs.model_name }}
-          
-          echo "✅ הורדה הושלמה!"
-          ollama list
-          
-      - name: Export model
+      - name: Download from Ollama Registry
         run: |
           MODEL_NAME="${{ github.event.inputs.model_name }}"
-          MODEL_FOLDER="${MODEL_NAME//:/_}"  # Replace : with _
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
           
-          echo "📦 מייצא את המודל..."
-          mkdir -p "$MODEL_FOLDER"
+          echo "📥 מוריד $MODEL_NAME מ-Ollama Registry..."
           
-          # ארכיון של כל תיקיית .ollama
-          cd ~
-          tar -czf "/tmp/models.tar.gz" .ollama/
+          python3 << 'PYTHON_SCRIPT'
+          import requests
+          import json
+          import os
+          from pathlib import Path
+          from tqdm import tqdm
           
-          # העברה לתיקיית המודל
-          mv "/tmp/models.tar.gz" "$GITHUB_WORKSPACE/$MODEL_FOLDER/"
+          model_name = "${{ github.event.inputs.model_name }}"
+          model_folder = model_name.replace(':', '_')
           
-          cd "$GITHUB_WORKSPACE/$MODEL_FOLDER"
+          # יצירת תיקייה
+          Path(model_folder).mkdir(exist_ok=True)
+          
+          # הורדה מ-Ollama Registry API
+          print(f"🔍 מקבל מידע על {model_name}...")
+          
+          # Ollama Registry API - manifest
+          registry_url = f"https://registry.ollama.ai/v2/library/{model_name.split(':')[0]}/manifests/{model_name.split(':')[1] if ':' in model_name else 'latest'}"
+          
+          print(f"📡 URL: {registry_url}")
+          
+          headers = {
+              'Accept': 'application/vnd.docker.distribution.manifest.v2+json'
+          }
+          
+          response = requests.get(registry_url, headers=headers)
+          
+          if response.status_code == 200:
+              manifest = response.json()
+              print(f"✅ קיבלנו manifest")
+              
+              # שמירת manifest
+              with open(f"{model_folder}/manifest.json", 'w') as f:
+                  json.dump(manifest, f, indent=2)
+              
+              # הורדת layers
+              total_size = sum(layer['size'] for layer in manifest.get('layers', []))
+              print(f"📦 סה\"כ {len(manifest.get('layers', []))} layers, גודל: {total_size / (1024**3):.2f} GB")
+              
+              for i, layer in enumerate(manifest.get('layers', [])):
+                  digest = layer['digest']
+                  size = layer['size']
+                  
+                  print(f"\n📥 Layer {i+1}/{len(manifest['layers'])}: {digest[:12]}... ({size / (1024**2):.1f} MB)")
+                  
+                  # הורדת layer
+                  blob_url = f"https://registry.ollama.ai/v2/library/{model_name.split(':')[0]}/blobs/{digest}"
+                  
+                  response = requests.get(blob_url, stream=True)
+                  
+                  if response.status_code == 200:
+                      output_file = f"{model_folder}/layer_{i:03d}_{digest.replace(':', '_')}.blob"
+                      
+                      with open(output_file, 'wb') as f:
+                          for chunk in tqdm(response.iter_content(chunk_size=8192), 
+                                          total=size//8192, 
+                                          unit='KB',
+                                          desc=f"Layer {i+1}"):
+                              f.write(chunk)
+                      
+                      print(f"✅ שמור: {output_file}")
+                  else:
+                      print(f"❌ שגיאה בהורדת layer: {response.status_code}")
+                      exit(1)
+              
+              # שמירת config
+              if 'config' in manifest:
+                  config_digest = manifest['config']['digest']
+                  config_url = f"https://registry.ollama.ai/v2/library/{model_name.split(':')[0]}/blobs/{config_digest}"
+                  
+                  print(f"\n⚙️ מוריד config...")
+                  response = requests.get(config_url)
+                  
+                  if response.status_code == 200:
+                      with open(f"{model_folder}/config.json", 'wb') as f:
+                          f.write(response.content)
+                      print(f"✅ Config נשמר")
+              
+              print(f"\n🎉 הורדה הושלמה!")
+              
+          else:
+              print(f"❌ שגיאה: {response.status_code}")
+              print(response.text)
+              exit(1)
+          
+          PYTHON_SCRIPT
+          
+          echo "✅ המודל הורד בהצלחה!"
+          
+      - name: Create archive
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          
+          cd "$MODEL_FOLDER"
+          echo "📦 יוצר ארכיון..."
+          tar -czf models.tar.gz *.blob *.json
+          rm *.blob *.json
+          
           SIZE=$(du -h models.tar.gz | cut -f1)
           echo "✅ נוצר ארכיון: models.tar.gz ($SIZE)"
           
