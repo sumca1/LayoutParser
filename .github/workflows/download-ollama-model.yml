@@ -1,0 +1,157 @@
+name: Download Ollama Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        description: 'שם מודל Ollama (למשל: llama3.1:8b)'
+        required: true
+        default: 'llama3.1:8b'
+      chunk_size_mb:
+        description: 'גודל chunk במגה-בתים'
+        required: false
+        default: '1900'
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 שעות מקסימום
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Install Ollama
+        run: |
+          echo "📥 מתקין Ollama..."
+          curl -fsSL https://ollama.com/install.sh | sh
+          
+      - name: Start Ollama service
+        run: |
+          echo "🚀 מפעיל Ollama service..."
+          ollama serve &
+          sleep 5
+          
+      - name: Download model
+        run: |
+          echo "📥 מוריד ${{ github.event.inputs.model_name }}..."
+          ollama pull ${{ github.event.inputs.model_name }}
+          
+          echo "✅ הורדה הושלמה!"
+          ollama list
+          
+      - name: Export model
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"  # Replace : with _
+          
+          echo "📦 מייצא את המודל..."
+          mkdir -p "$MODEL_FOLDER"
+          
+          # ארכיון של כל תיקיית .ollama
+          cd ~
+          tar -czf "/tmp/models.tar.gz" .ollama/
+          
+          # העברה לתיקיית המודל
+          mv "/tmp/models.tar.gz" "$GITHUB_WORKSPACE/$MODEL_FOLDER/"
+          
+          cd "$GITHUB_WORKSPACE/$MODEL_FOLDER"
+          SIZE=$(du -h models.tar.gz | cut -f1)
+          echo "✅ נוצר ארכיון: models.tar.gz ($SIZE)"
+          
+      - name: Split if needed
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          CHUNK_SIZE="${{ github.event.inputs.chunk_size_mb }}"
+          
+          cd "$MODEL_FOLDER"
+          
+          # גודל בbytes
+          SIZE_BYTES=$(stat -f%z models.tar.gz 2>/dev/null || stat -c%s models.tar.gz)
+          SIZE_MB=$((SIZE_BYTES / 1048576))
+          
+          echo "📊 גודל: ${SIZE_MB}MB"
+          
+          if [ $SIZE_MB -gt $CHUNK_SIZE ]; then
+            echo "✂️  מפצל לchunks של ${CHUNK_SIZE}MB..."
+            split -b ${CHUNK_SIZE}m models.tar.gz "part_"
+            rm models.tar.gz
+            
+            echo "✅ נוצרו מקטעים:"
+            ls -lh part_*
+            
+            # יצירת סקריפט reassemble bash
+            echo '#!/bin/bash' > reassemble.sh
+            echo 'cat part_* > models.tar.gz' >> reassemble.sh
+            echo 'echo "✅ אוחד ל-models.tar.gz"' >> reassemble.sh
+            echo 'rm part_*' >> reassemble.sh
+            chmod +x reassemble.sh
+            
+            # יצירת סקריפט reassemble PowerShell
+            echo '# PowerShell reassemble script' > reassemble.ps1
+            echo '$parts = Get-ChildItem -Filter "part_*" | Sort-Object Name' >> reassemble.ps1
+            echo '$output = "models.tar.gz"' >> reassemble.ps1
+            echo '$outStream = [System.IO.File]::OpenWrite($output)' >> reassemble.ps1
+            echo 'foreach ($part in $parts) {' >> reassemble.ps1
+            echo '    Write-Host "📎 $($part.Name)"' >> reassemble.ps1
+            echo '    $bytes = [System.IO.File]::ReadAllBytes($part.FullName)' >> reassemble.ps1
+            echo '    $outStream.Write($bytes, 0, $bytes.Length)' >> reassemble.ps1
+            echo '}' >> reassemble.ps1
+            echo '$outStream.Close()' >> reassemble.ps1
+            echo 'Write-Host "✅ אוחד ל-$output"' >> reassemble.ps1
+            echo 'Remove-Item part_* -Force' >> reassemble.ps1
+            
+            echo "✅ נוצרו סקריפטי reassemble"
+          else
+            echo "⚡ קובץ קטן מ-${CHUNK_SIZE}MB - לא צריך פיצול"
+          fi
+          
+      - name: Commit and push
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          git add "$MODEL_FOLDER"
+          git commit -m "🤖 Add Ollama model: $MODEL_NAME"
+          git push
+          
+          echo "✅ המודל הועלה ל-GitHub!"
+          
+      - name: Summary
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          
+          cd "$MODEL_FOLDER"
+          
+          if ls part_* 1> /dev/null 2>&1; then
+            echo "📦 המודל פוצל למקטעים:"
+            ls -lh part_*
+            echo ""
+            echo "להורדה והתקנה:"
+            echo "1. git clone --depth 1 --filter=blob:none --sparse ${{ github.repository }}"
+            echo "2. cd $(basename ${{ github.repository }})"
+            echo "3. git sparse-checkout set $MODEL_FOLDER"
+            echo "4. cd $MODEL_FOLDER && ./reassemble.sh"
+            echo "5. tar -xzf models.tar.gz -C ~/.ollama/"
+          else
+            SIZE=$(du -h models.tar.gz | cut -f1)
+            echo "📦 המודל מוכן להורדה: models.tar.gz ($SIZE)"
+            echo ""
+            echo "להורדה והתקנה:"
+            echo "1. git clone --depth 1 --filter=blob:none --sparse ${{ github.repository }}"
+            echo "2. cd $(basename ${{ github.repository }})"
+            echo "3. git sparse-checkout set $MODEL_FOLDER"
+            echo "4. cd $MODEL_FOLDER"
+            echo "5. tar -xzf models.tar.gz -C ~/.ollama/"
+          fi
+          
+          echo ""
+          echo "לשימוש:"
+          echo "ollama run $MODEL_NAME"
