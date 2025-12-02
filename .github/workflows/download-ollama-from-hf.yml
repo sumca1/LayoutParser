@@ -1,0 +1,176 @@
+name: Download Ollama Model from HuggingFace
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: 'HuggingFace model URL (https://huggingface.co/...)'
+        required: true
+        default: 'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf'
+      model_name:
+        description: 'שם המודל (llama3.1:8b)'
+        required: true
+        default: 'llama3.1:8b'
+      chunk_size_mb:
+        description: 'גודל chunk במגה-בתים'
+        required: false
+        default: '95'
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+          
+      - name: Download from HuggingFace
+        run: |
+          MODEL_URL="${{ github.event.inputs.model_url }}"
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          
+          mkdir -p "$MODEL_FOLDER"
+          
+          echo "📥 מוריד מ-HuggingFace..."
+          echo "🔗 URL: $MODEL_URL"
+          
+          # הורדה עם wget (תומך resume)
+          cd "$MODEL_FOLDER"
+          wget -c --progress=bar:force "$MODEL_URL" -O model.gguf || {
+            echo "❌ הורדה נכשלה"
+            exit 1
+          }
+          
+          SIZE_MB=$(du -m model.gguf | cut -f1)
+          SIZE_GB=$(echo "scale=2; $SIZE_MB / 1024" | bc)
+          
+          echo "✅ הורדה הושלמה!"
+          echo "📊 גודל: ${SIZE_MB}MB (${SIZE_GB}GB)"
+          
+          if [ $SIZE_MB -lt 50 ]; then
+            echo "⚠️  אזהרה: הקובץ קטן מדי - אולי ההורדה נכשלה?"
+            exit 1
+          fi
+          
+      - name: Create Modelfile
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          
+          cd "$MODEL_FOLDER"
+          
+          echo "📝 יוצר Modelfile..."
+          echo "FROM ./model.gguf" > Modelfile
+          
+          echo "✅ Modelfile נוצר"
+          
+      - name: Split if needed
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          CHUNK_SIZE="${{ github.event.inputs.chunk_size_mb }}"
+          
+          cd "$MODEL_FOLDER"
+          
+          # גודל בbytes
+          SIZE_BYTES=$(stat -c%s model.gguf)
+          SIZE_MB=$((SIZE_BYTES / 1048576))
+          
+          echo "📊 גודל: ${SIZE_MB}MB | סף: ${CHUNK_SIZE}MB"
+          
+          if [ $SIZE_MB -gt $CHUNK_SIZE ]; then
+            echo "✂️  מפצל לchunks של ${CHUNK_SIZE}MB..."
+            split -b ${CHUNK_SIZE}m model.gguf "part_"
+            rm model.gguf
+            
+            echo "✅ נוצרו מקטעים:"
+            ls -lh part_* | head -20
+            NUM_PARTS=$(ls -1 part_* | wc -l)
+            echo "📦 סה\"כ: $NUM_PARTS מקטעים"
+            
+            # סקריפט reassemble bash
+            echo '#!/bin/bash' > reassemble.sh
+            echo 'cat part_* > model.gguf' >> reassemble.sh
+            echo 'echo "✅ אוחד ל-model.gguf"' >> reassemble.sh
+            echo 'rm part_*' >> reassemble.sh
+            chmod +x reassemble.sh
+            
+            # סקריפט reassemble PowerShell
+            echo '$parts = Get-ChildItem -Filter "part_*" | Sort-Object Name' > reassemble.ps1
+            echo '$output = "model.gguf"' >> reassemble.ps1
+            echo '$outStream = [System.IO.File]::OpenWrite($output)' >> reassemble.ps1
+            echo 'foreach ($part in $parts) {' >> reassemble.ps1
+            echo '    Write-Host "📎 $($part.Name)"' >> reassemble.ps1
+            echo '    $bytes = [System.IO.File]::ReadAllBytes($part.FullName)' >> reassemble.ps1
+            echo '    $outStream.Write($bytes, 0, $bytes.Length)' >> reassemble.ps1
+            echo '}' >> reassemble.ps1
+            echo '$outStream.Close()' >> reassemble.ps1
+            echo 'Write-Host "✅ אוחד ל-$output"' >> reassemble.ps1
+            echo 'Remove-Item part_* -Force' >> reassemble.ps1
+            
+            echo "✅ נוצרו סקריפטי reassemble"
+          else
+            echo "⚡ קובץ קטן מ-${CHUNK_SIZE}MB - לא צריך פיצול"
+          fi
+          
+      - name: Commit and push
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          
+          git config user.name "GitHub Actions Bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add "$MODEL_FOLDER"
+          git commit -m "🤖 Add Ollama model from HF: $MODEL_NAME" || echo "No changes"
+          git push origin main || git push origin HEAD:main
+          
+          echo "✅ המודל הועלה ל-GitHub!"
+          
+      - name: Summary
+        run: |
+          MODEL_NAME="${{ github.event.inputs.model_name }}"
+          MODEL_FOLDER="${MODEL_NAME//:/_}"
+          
+          cd "$MODEL_FOLDER"
+          
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎉 הורדה הושלמה!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "📦 מודל: $MODEL_NAME"
+          echo "📂 תיקייה: $MODEL_FOLDER"
+          echo ""
+          
+          if ls part_* 1> /dev/null 2>&1; then
+            NUM_PARTS=$(ls -1 part_* | wc -l)
+            echo "📊 פוצל ל-$NUM_PARTS מקטעים"
+            echo ""
+            echo "להורדה והתקנה:"
+            echo "1. git clone --depth 1 --filter=blob:none --sparse ${{ github.repository }}"
+            echo "2. cd $(basename ${{ github.repository }})"
+            echo "3. git sparse-checkout set $MODEL_FOLDER"
+            echo "4. cd $MODEL_FOLDER && ./reassemble.sh"
+            echo "5. ollama create $MODEL_NAME -f Modelfile"
+          else
+            SIZE=$(du -h model.gguf | cut -f1)
+            echo "📊 גודל: $SIZE"
+            echo ""
+            echo "להורדה והתקנה:"
+            echo "1. git clone --depth 1 --filter=blob:none --sparse ${{ github.repository }}"
+            echo "2. cd $(basename ${{ github.repository }})"
+            echo "3. git sparse-checkout set $MODEL_FOLDER"
+            echo "4. cd $MODEL_FOLDER"
+            echo "5. ollama create $MODEL_NAME -f Modelfile"
+          fi
+          
+          echo ""
+          echo "לשימוש:"
+          echo "ollama run $MODEL_NAME"
+          echo ""
