@@ -134,12 +134,57 @@ jobs:
           SIZE_MB=$(du -m "${MODEL_FOLDER}.tar.gz" | cut -f1)
           echo "📊 גודל ארכיון: ${SIZE_MB}MB"
           
-          # יצירת release
-          echo "🏷️  יוצר release: $RELEASE_TAG"
+          # בדיקה אם צריך לפצל את הארכיון (>1800MB = ~1.8GB)
+          if [ $SIZE_MB -gt 1800 ]; then
+            echo "✂️  ארכיון גדול ($SIZE_MB MB) - מפצל ל-releases מרובים..."
+            
+            # פיצול לקבצים של 1.8GB
+            split -b 1800m "${MODEL_FOLDER}.tar.gz" "${MODEL_FOLDER}_part_"
+            
+            NUM_PARTS=$(ls -1 ${MODEL_FOLDER}_part_* | wc -l)
+            echo "📦 נוצרו $NUM_PARTS מקטעים"
+            
+            # יצירת סקריפט איחוד
+            echo '#!/bin/bash' > reassemble_archive.sh
+            echo "cat ${MODEL_FOLDER}_part_* > ${MODEL_FOLDER}.tar.gz" >> reassemble_archive.sh
+            echo "tar -xzf ${MODEL_FOLDER}.tar.gz" >> reassemble_archive.sh
+            echo "cd ${MODEL_FOLDER}" >> reassemble_archive.sh
+            echo "if [ -f reassemble.sh ]; then ./reassemble.sh; fi" >> reassemble_archive.sh
+            chmod +x reassemble_archive.sh
+            
+            # יצירת release עם כל המקטעים
+            echo "🏷️  יוצר release: $RELEASE_TAG"
+            gh release create "$RELEASE_TAG" \
+              --title "Ollama Model: $MODEL_NAME (Multi-part)" \
+              --notes "📦 Ollama model downloaded from HuggingFace (פוצל ל-$NUM_PARTS מקטעים)
           
-          gh release create "$RELEASE_TAG" \
-            --title "Ollama Model: $MODEL_NAME" \
-            --notes "📦 Ollama model downloaded from HuggingFace
+          **Model:** $MODEL_NAME
+          **Total Size:** ${SIZE_MB}MB
+          **Parts:** $NUM_PARTS files
+          
+          **להתקנה:**
+          \`\`\`bash
+          # הורד את כל המקטעים
+          wget https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG/${MODEL_FOLDER}_part_*
+          wget https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG/reassemble_archive.sh
+          
+          # אחד והתקן
+          chmod +x reassemble_archive.sh
+          ./reassemble_archive.sh
+          ollama create $MODEL_NAME -f ${MODEL_FOLDER}/Modelfile
+          \`\`\`" \
+              ${MODEL_FOLDER}_part_* reassemble_archive.sh
+            
+            rm -f ${MODEL_FOLDER}.tar.gz
+          else
+            echo "📤 ארכיון קטן ($SIZE_MB MB) - מעלה כקובץ יחיד..."
+            
+            # יצירת release
+            echo "🏷️  יוצר release: $RELEASE_TAG"
+            
+            gh release create "$RELEASE_TAG" \
+              --title "Ollama Model: $MODEL_NAME" \
+              --notes "📦 Ollama model downloaded from HuggingFace
           
           **Model:** $MODEL_NAME
           **Size:** ${SIZE_MB}MB
@@ -161,7 +206,8 @@ jobs:
           # התקן ב-Ollama
           ollama create $MODEL_NAME -f Modelfile
           \`\`\`" \
-            "${MODEL_FOLDER}.tar.gz"
+              "${MODEL_FOLDER}.tar.gz"
+          fi
           
           echo "✅ המודל הועלה כ-release!"
         env:
