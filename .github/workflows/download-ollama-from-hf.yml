@@ -134,12 +134,12 @@ jobs:
           SIZE_MB=$(du -m "${MODEL_FOLDER}.tar.gz" | cut -f1)
           echo "📊 גודל ארכיון: ${SIZE_MB}MB"
           
-          # בדיקה אם צריך לפצל את הארכיון (>1800MB = ~1.8GB)
-          if [ $SIZE_MB -gt 1800 ]; then
+          # בדיקה אם צריך לפצל את הארכיון (>1500MB = 1.5GB, כדי להשאיר מרווח בטיחות)
+          if [ $SIZE_MB -gt 1500 ]; then
             echo "✂️  ארכיון גדול ($SIZE_MB MB) - מפצל ל-releases מרובים..."
             
-            # פיצול לקבצים של 1.8GB
-            split -b 1800m "${MODEL_FOLDER}.tar.gz" "${MODEL_FOLDER}_part_"
+            # פיצול לקבצים של 1.5GB (1500MB)
+            split -b 1500m "${MODEL_FOLDER}.tar.gz" "${MODEL_FOLDER}_part_"
             
             NUM_PARTS=$(ls -1 ${MODEL_FOLDER}_part_* | wc -l)
             echo "📦 נוצרו $NUM_PARTS מקטעים"
