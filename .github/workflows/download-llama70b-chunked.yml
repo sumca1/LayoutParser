@@ -1,0 +1,106 @@
+name: Download Llama 70B in Chunks
+
+on:
+  workflow_dispatch:
+    inputs:
+      chunk_number:
+        description: 'Chunk number (1, 2, or 3)'
+        required: true
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+
+jobs:
+  download-chunk:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Download Chunk ${{ inputs.chunk_number }}
+      run: |
+        echo "🦙 Downloading llama3.1-70b Chunk ${{ inputs.chunk_number }}/3"
+        
+        MODEL_URL="https://huggingface.co/bartowski/Meta-Llama-3.1-70B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf"
+        CHUNK_NUM=${{ inputs.chunk_number }}
+        
+        # Calculate byte ranges for 3 chunks
+        # Total size: ~40GB = 40000000000 bytes
+        TOTAL_SIZE=40000000000
+        CHUNK_SIZE=$((TOTAL_SIZE / 3))
+        
+        case $CHUNK_NUM in
+          1)
+            START=0
+            END=$((CHUNK_SIZE - 1))
+            ;;
+          2)
+            START=$CHUNK_SIZE
+            END=$((CHUNK_SIZE * 2 - 1))
+            ;;
+          3)
+            START=$((CHUNK_SIZE * 2))
+            END=$((TOTAL_SIZE - 1))
+            ;;
+        esac
+        
+        echo "📊 Chunk $CHUNK_NUM: bytes $START-$END"
+        
+        # Download chunk with range
+        wget --header="Range: bytes=$START-$END" \
+             -O "llama70b_chunk_${CHUNK_NUM}.bin" \
+             "$MODEL_URL"
+        
+        ls -lh llama70b_chunk_${CHUNK_NUM}.bin
+    
+    - name: Split into 95MB parts for storage
+      run: |
+        echo "✂️ Splitting chunk ${{ inputs.chunk_number }} into 95MB parts..."
+        split -b 95m "llama70b_chunk_${{ inputs.chunk_number }}.bin" "chunk${{ inputs.chunk_number }}_part_"
+        
+        echo "📦 Created parts:"
+        ls -lh chunk${{ inputs.chunk_number }}_part_* | head -5
+        
+        # Create archive
+        tar -czf "llama70b_chunk_${{ inputs.chunk_number }}.tar.gz" chunk${{ inputs.chunk_number }}_part_*
+        
+        SIZE_MB=$(du -m "llama70b_chunk_${{ inputs.chunk_number }}.tar.gz" | cut -f1)
+        echo "📦 Archive size: ${SIZE_MB}MB"
+    
+    - name: Split archive if needed (>1500MB)
+      run: |
+        CHUNK_NUM=${{ inputs.chunk_number }}
+        ARCHIVE="llama70b_chunk_${CHUNK_NUM}.tar.gz"
+        SIZE_MB=$(du -m "$ARCHIVE" | cut -f1)
+        
+        echo "📊 Archive size: ${SIZE_MB}MB"
+        
+        if [ $SIZE_MB -gt 1500 ]; then
+          echo "📦 Splitting archive into 1.5GB parts..."
+          split -b 1500m "$ARCHIVE" "chunk${CHUNK_NUM}_archive_part_"
+          rm "$ARCHIVE"
+          
+          echo "✅ Created archive parts:"
+          ls -lh chunk${CHUNK_NUM}_archive_part_*
+        else
+          echo "✅ Archive is small enough, no splitting needed"
+        fi
+    
+    - name: Create Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        CHUNK_NUM=${{ inputs.chunk_number }}
+        TAG="llama3.1_70b_chunk${CHUNK_NUM}_$(date +%Y%m%d_%H%M%S)"
+        
+        echo "🏷️ Creating release: $TAG"
+        
+        gh release create "$TAG" \
+          --title "Llama 3.1 70B - Chunk $CHUNK_NUM/3" \
+          --notes "Part $CHUNK_NUM of 3 for llama3.1-70b model (~13GB)" \
+          chunk${CHUNK_NUM}_*
+        
+        echo "✅ Release created: $TAG"
