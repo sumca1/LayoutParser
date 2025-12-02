@@ -10,7 +10,7 @@ on:
       chunk_size_mb:
         description: 'גודל chunk במגה-בתים'
         required: false
-        default: '1900'
+        default: '95'
 
 jobs:
   download-and-upload:
@@ -136,11 +136,16 @@ jobs:
           
           cd "$MODEL_FOLDER"
           echo "📦 יוצר ארכיון..."
-          tar -czf models.tar.gz *.blob *.json
-          rm *.blob *.json
+          tar -czf models.tar.gz *.blob *.json 2>/dev/null || tar -czf models.tar.gz * 2>/dev/null || echo "No files to archive"
           
-          SIZE=$(du -h models.tar.gz | cut -f1)
-          echo "✅ נוצר ארכיון: models.tar.gz ($SIZE)"
+          if [ -f models.tar.gz ]; then
+            SIZE=$(du -h models.tar.gz | cut -f1)
+            echo "✅ נוצר ארכיון: models.tar.gz ($SIZE)"
+            rm *.blob *.json 2>/dev/null || true
+          else
+            echo "❌ לא נוצר ארכיון - אין קבצים!"
+            exit 1
+          fi
           
       - name: Split if needed
         run: |
@@ -154,15 +159,18 @@ jobs:
           SIZE_BYTES=$(stat -f%z models.tar.gz 2>/dev/null || stat -c%s models.tar.gz)
           SIZE_MB=$((SIZE_BYTES / 1048576))
           
-          echo "📊 גודל: ${SIZE_MB}MB"
+          echo "📊 גודל: ${SIZE_MB}MB | סף: ${CHUNK_SIZE}MB"
           
+          # GitHub מגביל 100MB לקובץ - אז תמיד נפצל אם גדול מהסף
           if [ $SIZE_MB -gt $CHUNK_SIZE ]; then
             echo "✂️  מפצל לchunks של ${CHUNK_SIZE}MB..."
             split -b ${CHUNK_SIZE}m models.tar.gz "part_"
             rm models.tar.gz
             
             echo "✅ נוצרו מקטעים:"
-            ls -lh part_*
+            ls -lh part_* | head -20
+            NUM_PARTS=$(ls -1 part_* | wc -l)
+            echo "📦 סה\"כ: $NUM_PARTS מקטעים"
             
             # יצירת סקריפט reassemble bash
             echo '#!/bin/bash' > reassemble.sh
