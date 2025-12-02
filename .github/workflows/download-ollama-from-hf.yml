@@ -118,26 +118,59 @@ jobs:
             echo "⚡ קובץ קטן מ-${CHUNK_SIZE}MB - לא צריך פיצול"
           fi
           
-      - name: Commit and push
+      - name: Upload as GitHub Release
         run: |
           MODEL_NAME="${{ github.event.inputs.model_name }}"
           MODEL_FOLDER="${MODEL_NAME//:/_}"
+          RELEASE_TAG="${MODEL_FOLDER}_$(date +%Y%m%d_%H%M%S)"
           
-          git config user.name "GitHub Actions Bot"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cd "$MODEL_FOLDER"
           
-          git add "$MODEL_FOLDER"
-          git commit -m "🤖 Add Ollama model from HF: $MODEL_NAME" || echo "No changes"
-          git push origin main || git push origin HEAD:main
+          # יצירת tarball
+          echo "📦 יוצר ארכיון..."
+          tar -czf "../${MODEL_FOLDER}.tar.gz" .
+          cd ..
           
-          echo "✅ המודל הועלה ל-GitHub!"
+          SIZE_MB=$(du -m "${MODEL_FOLDER}.tar.gz" | cut -f1)
+          echo "📊 גודל ארכיון: ${SIZE_MB}MB"
+          
+          # יצירת release
+          echo "🏷️  יוצר release: $RELEASE_TAG"
+          
+          gh release create "$RELEASE_TAG" \
+            --title "Ollama Model: $MODEL_NAME" \
+            --notes "📦 Ollama model downloaded from HuggingFace
+          
+          **Model:** $MODEL_NAME
+          **Size:** ${SIZE_MB}MB
+          
+          **להתקנה:**
+          \`\`\`bash
+          # הורד את הארכיון
+          wget https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG/${MODEL_FOLDER}.tar.gz
+          
+          # חלץ
+          tar -xzf ${MODEL_FOLDER}.tar.gz
+          cd ${MODEL_FOLDER}
+          
+          # אחד מקטעים (אם יש)
+          if [ -f reassemble.sh ]; then
+            ./reassemble.sh
+          fi
+          
+          # התקן ב-Ollama
+          ollama create $MODEL_NAME -f Modelfile
+          \`\`\`" \
+            "${MODEL_FOLDER}.tar.gz"
+          
+          echo "✅ המודל הועלה כ-release!"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Summary
         run: |
           MODEL_NAME="${{ github.event.inputs.model_name }}"
           MODEL_FOLDER="${MODEL_NAME//:/_}"
-          
-          cd "$MODEL_FOLDER"
           
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -145,31 +178,15 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           echo "📦 מודל: $MODEL_NAME"
-          echo "📂 תיקייה: $MODEL_FOLDER"
+          echo "🏷️  Release: https://github.com/${{ github.repository }}/releases"
           echo ""
-          
-          if ls part_* 1> /dev/null 2>&1; then
-            NUM_PARTS=$(ls -1 part_* | wc -l)
-            echo "📊 פוצל ל-$NUM_PARTS מקטעים"
-            echo ""
-            echo "להורדה והתקנה:"
-            echo "1. git clone --depth 1 --filter=blob:none --sparse ${{ github.repository }}"
-            echo "2. cd $(basename ${{ github.repository }})"
-            echo "3. git sparse-checkout set $MODEL_FOLDER"
-            echo "4. cd $MODEL_FOLDER && ./reassemble.sh"
-            echo "5. ollama create $MODEL_NAME -f Modelfile"
-          else
-            SIZE=$(du -h model.gguf | cut -f1)
-            echo "📊 גודל: $SIZE"
-            echo ""
-            echo "להורדה והתקנה:"
-            echo "1. git clone --depth 1 --filter=blob:none --sparse ${{ github.repository }}"
-            echo "2. cd $(basename ${{ github.repository }})"
-            echo "3. git sparse-checkout set $MODEL_FOLDER"
-            echo "4. cd $MODEL_FOLDER"
-            echo "5. ollama create $MODEL_NAME -f Modelfile"
-          fi
-          
+          echo "להתקנה:"
+          echo "1. לך ל-Releases בGitHub"
+          echo "2. הורד את הקובץ .tar.gz"
+          echo "3. tar -xzf <file>.tar.gz"
+          echo "4. cd $MODEL_FOLDER"
+          echo "5. אם יש part_* - הרץ reassemble.sh"
+          echo "6. ollama create $MODEL_NAME -f Modelfile"
           echo ""
           echo "לשימוש:"
           echo "ollama run $MODEL_NAME"
