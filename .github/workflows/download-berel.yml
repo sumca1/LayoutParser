@@ -1,0 +1,130 @@
+name: Download BEREL Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        description: 'BEREL model version'
+        required: false
+        default: 'dicta-il/BEREL'
+        type: string
+
+jobs:
+  download-berel:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          pip install transformers torch huggingface-hub
+      
+      - name: Download BEREL model
+        run: |
+          python -c "
+          from transformers import AutoTokenizer, AutoModel
+          import os
+          
+          model_name = '${{ inputs.model_name }}'
+          save_dir = 'downloaded_models/berel'
+          
+          print(f'📥 מוריד את {model_name}...')
+          print(f'💾 שומר ב-{save_dir}')
+          
+          os.makedirs(save_dir, exist_ok=True)
+          
+          # Download tokenizer
+          print('🔤 מוריד tokenizer...')
+          tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+          tokenizer.save_pretrained(save_dir)
+          print('✅ Tokenizer הורד')
+          
+          # Download model
+          print('🧠 מוריד model...')
+          model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+          model.save_pretrained(save_dir)
+          print('✅ Model הורד')
+          
+          print(f'✨ BEREL הורד בהצלחה!')
+          print(f'📂 נמצא ב-{save_dir}')
+          "
+      
+      - name: Create zip archive
+        run: |
+          cd downloaded_models
+          zip -r berel.zip berel/
+          echo "📦 יצרתי קובץ ZIP: berel.zip"
+      
+      - name: Get file size
+        run: |
+          du -sh downloaded_models/berel
+          du -sh downloaded_models/berel.zip
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: berel-${{ github.run_number }}
+          release_name: BEREL Model (Rabbinic Hebrew + Aramaic)
+          body: |
+            🎯 **BEREL - עברית רבנית + ארמית**
+            
+            מודל BERT מיוחד למטרות:
+            - ✅ עברית רבנית (תלמוד, מדרשים, ראשונים)
+            - ✅ ארמית תלמודית
+            - ✅ צירופים רבניים
+            - ✅ לשון חכמים
+            
+            📥 הורד את `berel.zip`
+            📂 חלץ לתיקיית `downloaded_models/berel`
+            
+            🔧 **שימוש:**
+            ```python
+            from transformers import AutoTokenizer, AutoModel
+            
+            tokenizer = AutoTokenizer.from_pretrained(
+                "downloaded_models/berel",
+                trust_remote_code=True,
+                local_files_only=True
+            )
+            model = AutoModel.from_pretrained(
+                "downloaded_models/berel",
+                trust_remote_code=True,
+                local_files_only=True
+            )
+            ```
+            
+            ⭐ **למה BEREL?**
+            - מאומן ספציפית על טקסטים רבניים
+            - מבין ארמית תלמודית
+            - דיוק גבוה יותר לעברית רבנית מ-DictaBERT רגיל
+            
+            **גודל:** ~400-800MB
+            **הורד:** ${{ github.run_number }}
+          draft: false
+          prerelease: false
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./downloaded_models/berel.zip
+          asset_name: berel.zip
+          asset_content_type: application/zip
+      
+      - name: Success message
+        run: |
+          echo "✅ BEREL הורד והועלה ל-GitHub Releases!"
+          echo "📦 קובץ: berel.zip"
+          echo "🔗 גש ל-Releases כדי להוריד"
