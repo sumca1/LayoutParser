@@ -18,19 +18,19 @@ jobs:
     
     - name: Install PyTorch first
       run: |
-        pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
     
     - name: Verify PyTorch installation
       run: |
-        python -c "import torch; print(f'PyTorch {torch.__version__} installed successfully')"
+        python -c "import torch; print(f'PyTorch {torch.__version__} installed')"
     
-    - name: Install layoutparser
+    - name: Install other dependencies  
       run: |
-        pip install layoutparser
+        pip install layoutparser opencv-python
     
     - name: Install detectron2
       run: |
-        pip install 'git+https://github.com/facebookresearch/detectron2.git@v0.6#egg=detectron2'
+        python -m pip install 'git+https://github.com/facebookresearch/detectron2.git@v0.6#egg=detectron2'
     
     - name: Download PubLayNet model
       run: |
