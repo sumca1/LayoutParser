@@ -1,10 +1,7 @@
 name: Download LayoutParser Models
 
 on:
-  workflow_dispatch:  # Manual trigger
-  push:
-    branches:
-      - main
+  workflow_dispatch:  # Manual trigger only
 
 jobs:
   download-and-upload:
