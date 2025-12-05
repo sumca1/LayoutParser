@@ -18,7 +18,11 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install layoutparser torchvision torch
+        # התקן torch ו-torchvision ראשון (נדרש לפני detectron2)
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        # התקן layoutparser
+        pip install layoutparser
+        # התקן detectron2 (צריך torch מותקן)
         pip install 'git+https://github.com/facebookresearch/detectron2.git@v0.6#egg=detectron2'
     
     - name: Download PubLayNet model
