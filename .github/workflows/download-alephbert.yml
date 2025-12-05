@@ -1,0 +1,180 @@
+name: Download AlephBERT Models
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_size:
+        description: 'Model size to download'
+        required: true
+        default: 'base'
+        type: choice
+        options:
+          - small
+          - base
+          - large
+
+jobs:
+  download-alephbert:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install transformers torch huggingface_hub
+    
+    - name: Download AlephBERT model
+      run: |
+        python - << 'EOF'
+        from transformers import BertTokenizer, BertForMaskedLM
+        from huggingface_hub import snapshot_download
+        import os
+        
+        model_size = "${{ github.event.inputs.model_size }}"
+        model_name = f"onlplab/alephbert-{model_size}"
+        
+        print(f"📥 מוריד את {model_name}...")
+        
+        # הורדה מ-HuggingFace
+        try:
+            # הורדת המודל המלא
+            model_path = snapshot_download(
+                repo_id=model_name,
+                cache_dir="./alephbert_cache",
+                local_dir=f"./alephbert_models/alephbert-{model_size}",
+                local_dir_use_symlinks=False
+            )
+            print(f"✅ הורדה הושלמה: {model_path}")
+            
+            # בדיקה שהמודל עובד
+            print(f"🧪 בודק את המודל...")
+            tokenizer = BertTokenizer.from_pretrained(f"./alephbert_models/alephbert-{model_size}")
+            model = BertForMaskedLM.from_pretrained(f"./alephbert_models/alephbert-{model_size}")
+            
+            # בדיקה בסיסית
+            test_text = "שלום [MASK] טוב"
+            inputs = tokenizer(test_text, return_tensors='pt')
+            outputs = model(**inputs)
+            
+            print(f"✅ המודל עובד!")
+            print(f"📊 גודל מילון: {tokenizer.vocab_size}")
+            
+        except Exception as e:
+            print(f"❌ שגיאה: {e}")
+            exit(1)
+        EOF
+    
+    - name: Create test script
+      run: |
+        cat > test_alephbert_downloaded.py << 'EOF'
+        """
+        בדיקת AlephBERT שהורד מ-HuggingFace
+        """
+        
+        from transformers import BertTokenizer, BertForMaskedLM
+        import torch
+        import os
+        
+        model_size = "${{ github.event.inputs.model_size }}"
+        model_path = f"./alephbert_models/alephbert-{model_size}"
+        
+        print(f"🔍 טוען את AlephBERT-{model_size}...")
+        
+        if not os.path.exists(model_path):
+            print(f"❌ המודל לא נמצא ב-{model_path}")
+            exit(1)
+        
+        tokenizer = BertTokenizer.from_pretrained(model_path)
+        model = BertForMaskedLM.from_pretrained(model_path)
+        model.eval()
+        
+        print(f"✅ המודל נטען בהצלחה!")
+        print(f"📊 גודל מילון: {tokenizer.vocab_size}")
+        
+        def predict_masked_word(sentence, top_k=10):
+            """
+            מנבא מילים חסרות
+            """
+            print(f"\n📝 משפט: {sentence}")
+            
+            inputs = tokenizer(sentence, return_tensors='pt')
+            outputs = model(**inputs)
+            
+            # מצא את מיקום ה-MASK
+            mask_token_index = torch.where(inputs['input_ids'] == tokenizer.mask_token_id)[1]
+            
+            if len(mask_token_index) == 0:
+                print("❌ לא נמצא [MASK] במשפט")
+                return
+            
+            mask_token_logits = outputs.logits[0, mask_token_index, :]
+            top_tokens = torch.topk(mask_token_logits, top_k, dim=1).indices[0].tolist()
+            
+            print(f"🏆 Top {top_k} תחזיות:")
+            for i, token_id in enumerate(top_tokens, 1):
+                word = tokenizer.decode([token_id])
+                print(f"   {i}. {word}")
+        
+        # בדיקות
+        print("\n" + "="*70)
+        print("בדיקה 1: ב\"ה - ברוך ה' או ברוך הוא?")
+        print("="*70)
+        predict_masked_word("לפי שהיה אברהם בטל ביחוד אור אין סוף [MASK]")
+        
+        print("\n" + "="*70)
+        print("בדיקה 2: מצות בהקשר של אוכל")
+        print("="*70)
+        predict_masked_word("בחג הפסח אוכלים [MASK] במקום לחם")
+        
+        print("\n" + "="*70)
+        print("בדיקה 3: מצות בהקשר של תורה")
+        print("="*70)
+        predict_masked_word("על ידי עסק התורה והמצות נכלל [MASK] הקודש")
+        
+        print("\n" + "="*70)
+        print("בדיקה 4: מילה חסרה פשוטה")
+        print("="*70)
+        predict_masked_word("דני הלך לבית [MASK] היום")
+        
+        print("\n✅ כל הבדיקות הושלמו!")
+        EOF
+    
+    - name: Test AlephBERT
+      run: |
+        python test_alephbert_downloaded.py
+    
+    - name: Package model as artifact
+      run: |
+        cd alephbert_models
+        tar -czf alephbert-${{ github.event.inputs.model_size }}.tar.gz alephbert-${{ github.event.inputs.model_size }}
+        ls -lh *.tar.gz
+    
+    - name: Upload model artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: alephbert-${{ github.event.inputs.model_size }}-model
+        path: alephbert_models/alephbert-${{ github.event.inputs.model_size }}.tar.gz
+        retention-days: 7
+    
+    - name: Create summary
+      run: |
+        echo "## 📦 AlephBERT Model Downloaded" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Model:** alephbert-${{ github.event.inputs.model_size }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📥 להורדה:" >> $GITHUB_STEP_SUMMARY
+        echo "1. לך ל-Actions" >> $GITHUB_STEP_SUMMARY
+        echo "2. בחר את ה-workflow הזה" >> $GITHUB_STEP_SUMMARY
+        echo "3. הורד את ה-artifact: \`alephbert-${{ github.event.inputs.model_size }}-model\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔧 להתקנה מקומית:" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo "tar -xzf alephbert-${{ github.event.inputs.model_size }}.tar.gz" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
