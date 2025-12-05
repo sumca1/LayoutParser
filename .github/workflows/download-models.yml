@@ -16,13 +16,20 @@ jobs:
       with:
         python-version: '3.9'
     
-    - name: Install dependencies
+    - name: Install PyTorch first
       run: |
-        # התקן torch ו-torchvision ראשון (נדרש לפני detectron2)
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-        # התקן layoutparser
+        pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
+    
+    - name: Verify PyTorch installation
+      run: |
+        python -c "import torch; print(f'PyTorch {torch.__version__} installed successfully')"
+    
+    - name: Install layoutparser
+      run: |
         pip install layoutparser
-        # התקן detectron2 (צריך torch מותקן)
+    
+    - name: Install detectron2
+      run: |
         pip install 'git+https://github.com/facebookresearch/detectron2.git@v0.6#egg=detectron2'
     
     - name: Download PubLayNet model
